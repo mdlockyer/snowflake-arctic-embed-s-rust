@@ -95,3 +95,10 @@ python3 -I scripts/fp32_reference.py embed weights /tmp/long_ids.json tests/data
 
 `snowflake-arctic-embed-s` is © Snowflake Inc., released under Apache-2.0. Model weights are not
 included in this repository.
+
+## License
+
+Licensed under the [Apache License, Version 2.0](LICENSE).
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in
+this project shall be licensed as above, without any additional terms or conditions.
