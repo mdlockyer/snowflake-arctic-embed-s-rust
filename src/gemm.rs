@@ -26,6 +26,8 @@ pub enum SimdBackend {
     Scalar,
 }
 
+/// Whether the CPU supports the SME backend. Requires **SME2**, not just SME: the attention `P @ V`
+/// kernel uses the SME2 two-way `smopa za.s, .., z.h, z.h` instruction.
 #[cfg(target_arch = "aarch64")]
 fn detect_arm_sme() -> bool {
     #[cfg(target_os = "macos")]
@@ -43,7 +45,7 @@ fn detect_arm_sme() -> bool {
         let mut size = std::mem::size_of::<i32>();
         let res = unsafe {
             sysctlbyname(
-                c"hw.optional.arm.FEAT_SME".as_ptr(),
+                c"hw.optional.arm.FEAT_SME2".as_ptr(),
                 &mut val as *mut i32 as *mut _,
                 &mut size,
                 std::ptr::null(),
@@ -58,14 +60,43 @@ fn detect_arm_sme() -> bool {
             fn getauxval(type_: u64) -> u64;
         }
         const AT_HWCAP2: u64 = 26;
-        const HWCAP2_SME: u64 = 1 << 23;
-        return unsafe { (getauxval(AT_HWCAP2) & HWCAP2_SME) != 0 };
+        // arch/arm64/include/uapi/asm/hwcap.h
+        const HWCAP2_SME2: u64 = 1 << 37;
+        return unsafe { (getauxval(AT_HWCAP2) & HWCAP2_SME2) != 0 };
     }
     #[allow(unreachable_code)]
     false
 }
 
 impl SimdBackend {
+    /// Whether the host CPU can run this backend's kernels (forcing an unsupported backend with
+    /// [`crate::ArcticEmbedS::from_dir_with_backend`] crashes with an illegal instruction).
+    pub fn is_supported(self) -> bool {
+        match self {
+            SimdBackend::Scalar => true,
+            #[cfg(target_arch = "aarch64")]
+            SimdBackend::ArmNeon => true,
+            #[cfg(target_arch = "aarch64")]
+            SimdBackend::ArmDotProd => std::arch::is_aarch64_feature_detected!("dotprod"),
+            #[cfg(target_arch = "aarch64")]
+            SimdBackend::ArmI8mm => std::arch::is_aarch64_feature_detected!("i8mm"),
+            #[cfg(target_arch = "aarch64")]
+            SimdBackend::ArmSme => detect_arm_sme(),
+            #[cfg(target_arch = "x86_64")]
+            SimdBackend::X86Avx2 => {
+                is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma")
+            }
+            #[cfg(target_arch = "x86_64")]
+            SimdBackend::X86AvxVnni => {
+                is_x86_feature_detected!("avx2")
+                    && is_x86_feature_detected!("fma")
+                    && is_x86_feature_detected!("avxvnni")
+            }
+            #[allow(unreachable_patterns)]
+            _ => false,
+        }
+    }
+
     pub fn detect() -> Self {
         #[cfg(target_arch = "aarch64")]
         {

@@ -1,7 +1,20 @@
-use arctic_embed_s_int8::model::Workspace;
-use arctic_embed_s_int8::simd_math::*;
+//! Micro-benchmark of the SME attention kernel vs. the NEON per-head path (Apple M4 / SME2 only).
+#[cfg(target_arch = "aarch64")]
+use arctic_embed_s_int8::{gemm::SimdBackend, model::Workspace, simd_math::*};
+#[cfg(target_arch = "aarch64")]
 use std::time::Instant;
+
+#[cfg(not(target_arch = "aarch64"))]
 fn main() {
+    eprintln!("attn_bench benchmarks the SME kernels and only runs on aarch64");
+}
+
+#[cfg(target_arch = "aarch64")]
+fn main() {
+    if !SimdBackend::ArmSme.is_supported() {
+        eprintln!("attn_bench needs a CPU with SME2 (e.g. Apple M4)");
+        return;
+    }
     let mut ws = Workspace::new();
     for (i, v) in ws.qkv_buf.iter_mut().enumerate() {
         *v = ((i * 2654435761usize) % 1000) as f32 / 300.0 - 1.6;

@@ -27,6 +27,10 @@
 //! Helper threads spin for a short time after each job (so back-to-back calls start instantly)
 //! and then park, so an idle [`ParallelContext`] costs no CPU.
 
+// The multi-threaded path needs the SME kernels (aarch64 only); elsewhere `forward_cls` always takes
+// the single-threaded fallback and the pool machinery is unused.
+#![cfg_attr(not(target_arch = "aarch64"), allow(dead_code, unused_variables))]
+
 use crate::gemm::SimdBackend;
 use crate::model::{PackedModel, Workspace};
 use crate::quantize::{HIDDEN_SIZE, MAX_POSITIONS};

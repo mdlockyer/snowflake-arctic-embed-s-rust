@@ -103,6 +103,10 @@ pub unsafe fn neon_gelu_pair_f32(x0: float32x4_t, x1: float32x4_t) -> (float32x4
     (vmulq_f32(x0, gate0), vmulq_f32(x1, gate1))
 }
 
+/// Vectorized `exp(x)` (inputs clamped to `[-87.3, 88]`).
+///
+/// # Safety
+/// The CPU must support AVX2 and FMA.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
 #[inline]
@@ -111,7 +115,7 @@ pub unsafe fn avx2_exp_f32(y_in: __m256) -> __m256 {
         _mm256_min_ps(y_in, _mm256_set1_ps(88.0)),
         _mm256_set1_ps(-87.3),
     );
-    let log2e = _mm256_set1_ps(1.4426950408889634);
+    let log2e = _mm256_set1_ps(std::f32::consts::LOG2_E);
     let ln2_hi = _mm256_set1_ps(0.693145751953125);
     let ln2_lo = _mm256_set1_ps(1.428606765330187e-6);
 
@@ -138,6 +142,10 @@ pub unsafe fn avx2_exp_f32(y_in: __m256) -> __m256 {
     _mm256_mul_ps(p, pow2n)
 }
 
+/// GELU (rational approximation, inputs clamped to `[-4.8, 4.8]`).
+///
+/// # Safety
+/// The CPU must support AVX2 and FMA.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
 #[inline]

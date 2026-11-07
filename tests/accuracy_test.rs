@@ -163,13 +163,21 @@ fn test_all_simd_backends_and_ae8_roundtrip_bit_identical() {
     let mut scalar_out = [0.0f32; HIDDEN_SIZE];
     PackedModel::from_raw(&raw, SimdBackend::Scalar).forward_cls(&ids, &mut ws, &mut scalar_out);
 
-    #[cfg(target_arch = "aarch64")]
     for &b in &[
         SimdBackend::ArmSme,
         SimdBackend::ArmI8mm,
         SimdBackend::ArmDotProd,
         SimdBackend::ArmNeon,
+        SimdBackend::X86AvxVnni,
+        SimdBackend::X86Avx2,
     ] {
+        if !b.is_supported() {
+            println!(
+                "Backend {:<32} not supported on this CPU, skipped",
+                b.name()
+            );
+            continue;
+        }
         let mut out = [0.0f32; HIDDEN_SIZE];
         PackedModel::from_raw(&raw, b).forward_cls(&ids, &mut ws, &mut out);
         let cos = cosine_similarity(&scalar_out, &out);
