@@ -283,38 +283,19 @@ fn main() {
     }
     bench_ids.push(102u16);
 
-    let backends: Vec<SimdBackend> = {
-        #[cfg(target_arch = "aarch64")]
-        {
-            let mut v = Vec::new();
-            if SimdBackend::detect() == SimdBackend::ArmSme {
-                v.push(SimdBackend::ArmSme);
-            }
-            v.extend_from_slice(&[
-                SimdBackend::ArmI8mm,
-                SimdBackend::ArmDotProd,
-                SimdBackend::ArmNeon,
-                SimdBackend::Scalar,
-            ]);
-            v
-        }
-        #[cfg(target_arch = "x86_64")]
-        {
-            let mut v = Vec::new();
-            if is_x86_feature_detected!("avxvnni") {
-                v.push(SimdBackend::X86AvxVnni);
-            }
-            if is_x86_feature_detected!("avx2") {
-                v.push(SimdBackend::X86Avx2);
-            }
-            v.push(SimdBackend::Scalar);
-            v
-        }
-        #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
-        {
-            vec![SimdBackend::Scalar]
-        }
-    };
+    // Every backend this CPU can run (forcing an unsupported one is an illegal instruction).
+    let backends: Vec<SimdBackend> = [
+        SimdBackend::ArmSme,
+        SimdBackend::ArmI8mm,
+        SimdBackend::ArmDotProd,
+        SimdBackend::ArmNeon,
+        SimdBackend::X86AvxVnni,
+        SimdBackend::X86Avx2,
+        SimdBackend::Scalar,
+    ]
+    .into_iter()
+    .filter(|b| b.is_supported())
+    .collect();
 
     let ref_emb = engine.embed_tokens(&bench_ids, &mut ws);
     for &b in &backends {
