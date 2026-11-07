@@ -1,5 +1,6 @@
 //! Intra-op parallel forward pass must match the single-threaded forward pass.
 mod common;
+use arctic_embed_s_int8::gemm::SimdBackend;
 use arctic_embed_s_int8::model::Workspace;
 use arctic_embed_s_int8::parallel::ParallelContext;
 use arctic_embed_s_int8::{cosine_similarity, ArcticEmbedS};
@@ -7,6 +8,15 @@ use arctic_embed_s_int8::{cosine_similarity, ArcticEmbedS};
 #[test]
 fn test_parallel_forward_matches_single_thread() {
     let engine = ArcticEmbedS::from_dir(common::weights_dir()).expect("load");
+    if engine.model.backend != SimdBackend::ArmSme {
+        // Without SME the context always takes the single-threaded path, so this would only
+        // compare the single-threaded forward pass with itself (and is slow on small CI runners).
+        println!(
+            "skipped: intra-op parallel path needs the SME backend (have {})",
+            engine.model.backend.name()
+        );
+        return;
+    }
     let mut ws = Workspace::new();
     let lengths = [1usize, 2, 5, 8, 15, 16, 17, 31, 33, 64, 100, 128, 257, 512];
     for threads in [2usize, 3, 4] {
