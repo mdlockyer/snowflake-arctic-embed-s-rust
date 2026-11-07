@@ -1454,16 +1454,8 @@ pub fn dot32_f32(a: &[f32], b: &[f32]) -> f32 {
     }
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
-            unsafe {
-                let pa = a.as_ptr();
-                let pb = b.as_ptr();
-                let mut s0 = _mm256_mul_ps(_mm256_loadu_ps(pa), _mm256_loadu_ps(pb));
-                let mut s1 = _mm256_mul_ps(_mm256_loadu_ps(pa.add(8)), _mm256_loadu_ps(pb.add(8)));
-                s0 = _mm256_fmadd_ps(_mm256_loadu_ps(pa.add(16)), _mm256_loadu_ps(pb.add(16)), s0);
-                s1 = _mm256_fmadd_ps(_mm256_loadu_ps(pa.add(24)), _mm256_loadu_ps(pb.add(24)), s1);
-                return hsum256_ps(_mm256_add_ps(s0, s1));
-            }
+        if has_avx2_fma() {
+            return unsafe { dot32_f32_avx2(a.as_ptr(), b.as_ptr()) };
         }
     }
     #[allow(unreachable_code)]
@@ -1578,6 +1570,20 @@ pub fn compute_scores_head32(q_slice: &[f32], k_head: &[f32], scale: f32, scores
         return;
     }
 
+    #[cfg(target_arch = "x86_64")]
+    if has_avx2_fma() {
+        unsafe {
+            compute_scores_head32_avx2(
+                q_slice.as_ptr(),
+                k_head.as_ptr(),
+                scale,
+                scores.as_mut_ptr(),
+                seq_len,
+            )
+        };
+        return;
+    }
+
     #[allow(unreachable_code)]
     for tk in 0..seq_len {
         scores[tk] = dot32_f32(q_slice, &k_head[tk * 32..(tk + 1) * 32]) * scale;
@@ -1667,6 +1673,12 @@ pub fn softmax_inplace(scores: &mut [f32]) {
             *ptr.add(i) *= inv_sum;
             i += 1;
         }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    if has_avx2_fma() {
+        unsafe { softmax_inplace_avx2(scores) };
+        return;
     }
 
     #[cfg(not(target_arch = "aarch64"))]
@@ -1784,28 +1796,16 @@ pub fn weighted_sum_head32(probs: &[f32], v_head: &[f32], out_32: &mut [f32]) {
 
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+        if has_avx2_fma() {
             unsafe {
-                let mut acc0 = _mm256_setzero_ps();
-                let mut acc1 = _mm256_setzero_ps();
-                let mut acc2 = _mm256_setzero_ps();
-                let mut acc3 = _mm256_setzero_ps();
-                let v_ptr = v_head.as_ptr();
-                for (t, &p) in probs.iter().enumerate() {
-                    let vp = _mm256_set1_ps(p);
-                    let row = v_ptr.add(t * 32);
-                    acc0 = _mm256_fmadd_ps(_mm256_loadu_ps(row), vp, acc0);
-                    acc1 = _mm256_fmadd_ps(_mm256_loadu_ps(row.add(8)), vp, acc1);
-                    acc2 = _mm256_fmadd_ps(_mm256_loadu_ps(row.add(16)), vp, acc2);
-                    acc3 = _mm256_fmadd_ps(_mm256_loadu_ps(row.add(24)), vp, acc3);
-                }
-                let dst = out_32.as_mut_ptr();
-                _mm256_storeu_ps(dst, acc0);
-                _mm256_storeu_ps(dst.add(8), acc1);
-                _mm256_storeu_ps(dst.add(16), acc2);
-                _mm256_storeu_ps(dst.add(24), acc3);
-                return;
-            }
+                weighted_sum_head32_avx2(
+                    probs.as_ptr(),
+                    v_head.as_ptr(),
+                    seq_len,
+                    out_32.as_mut_ptr(),
+                )
+            };
+            return;
         }
     }
 
@@ -2899,6 +2899,173 @@ pub fn l2_normalize_inplace(v: &mut [f32]) {
         for x in v.iter_mut() {
             *x *= inv_norm;
         }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// x86_64 AVX2+FMA attention kernels (single-sequence, ragged and `[CLS]` attention).
+//
+// These must be `#[target_feature]` functions: intrinsics called from a function compiled
+// without AVX2 cannot be inlined, so each one becomes an out-of-line call passing vectors
+// through memory (this made x86 attention ~an order of magnitude slower than NEON).
+// ---------------------------------------------------------------------------------------------
+
+/// Runtime check for the AVX2+FMA attention kernels (`is_x86_feature_detected!` caches).
+#[cfg(target_arch = "x86_64")]
+#[inline]
+fn has_avx2_fma() -> bool {
+    is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma")
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+#[inline]
+unsafe fn dot32_f32_avx2(pa: *const f32, pb: *const f32) -> f32 {
+    let mut s0 = _mm256_mul_ps(_mm256_loadu_ps(pa), _mm256_loadu_ps(pb));
+    let mut s1 = _mm256_mul_ps(_mm256_loadu_ps(pa.add(8)), _mm256_loadu_ps(pb.add(8)));
+    s0 = _mm256_fmadd_ps(_mm256_loadu_ps(pa.add(16)), _mm256_loadu_ps(pb.add(16)), s0);
+    s1 = _mm256_fmadd_ps(_mm256_loadu_ps(pa.add(24)), _mm256_loadu_ps(pb.add(24)), s1);
+    hsum256_ps(_mm256_add_ps(s0, s1))
+}
+
+/// Partial dot product of a 32-float key with `q` held in 4 registers (8 lanes left to reduce).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+#[inline]
+unsafe fn dot32x4_avx2(q0: __m256, q1: __m256, q2: __m256, q3: __m256, kp: *const f32) -> __m256 {
+    let a = _mm256_fmadd_ps(
+        q1,
+        _mm256_loadu_ps(kp.add(8)),
+        _mm256_mul_ps(q0, _mm256_loadu_ps(kp)),
+    );
+    let b = _mm256_fmadd_ps(
+        q3,
+        _mm256_loadu_ps(kp.add(24)),
+        _mm256_mul_ps(q2, _mm256_loadu_ps(kp.add(16))),
+    );
+    _mm256_add_ps(a, b)
+}
+
+/// `scores[tk] = dot(q * scale, k[tk])` for `seq_len` keys of 32 floats: `q` lives in 4 registers,
+/// 4 keys per iteration, reduced with a `hadd` tree into one 4-wide store.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn compute_scores_head32_avx2(
+    q: *const f32,
+    k: *const f32,
+    scale: f32,
+    sp: *mut f32,
+    seq_len: usize,
+) {
+    let vs = _mm256_set1_ps(scale);
+    let q0 = _mm256_mul_ps(_mm256_loadu_ps(q), vs);
+    let q1 = _mm256_mul_ps(_mm256_loadu_ps(q.add(8)), vs);
+    let q2 = _mm256_mul_ps(_mm256_loadu_ps(q.add(16)), vs);
+    let q3 = _mm256_mul_ps(_mm256_loadu_ps(q.add(24)), vs);
+    let mut tk = 0usize;
+    while tk + 4 <= seq_len {
+        let k0 = k.add(tk * 32);
+        let (s0, s1, s2, s3) = (
+            dot32x4_avx2(q0, q1, q2, q3, k0),
+            dot32x4_avx2(q0, q1, q2, q3, k0.add(32)),
+            dot32x4_avx2(q0, q1, q2, q3, k0.add(64)),
+            dot32x4_avx2(q0, q1, q2, q3, k0.add(96)),
+        );
+        // Per 128-bit half: [sum4(s0), sum4(s1), sum4(s2), sum4(s3)]; adding the halves finishes the dots.
+        let t = _mm256_hadd_ps(_mm256_hadd_ps(s0, s1), _mm256_hadd_ps(s2, s3));
+        let r = _mm_add_ps(_mm256_castps256_ps128(t), _mm256_extractf128_ps(t, 1));
+        _mm_storeu_ps(sp.add(tk), r);
+        tk += 4;
+    }
+    while tk < seq_len {
+        *sp.add(tk) = hsum256_ps(dot32x4_avx2(q0, q1, q2, q3, k.add(tk * 32)));
+        tk += 1;
+    }
+}
+
+/// In-place softmax, 8 lanes at a time with [`avx2_exp_f32`].
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn softmax_inplace_avx2(scores: &mut [f32]) {
+    let len = scores.len();
+    let ptr = scores.as_mut_ptr();
+    let mut i = 0usize;
+    let mut vmax = _mm256_set1_ps(f32::NEG_INFINITY);
+    while i + 8 <= len {
+        vmax = _mm256_max_ps(vmax, _mm256_loadu_ps(ptr.add(i)));
+        i += 8;
+    }
+    let mut max_val = hmax256_ps(vmax);
+    while i < len {
+        max_val = max_val.max(*ptr.add(i));
+        i += 1;
+    }
+
+    let vm = _mm256_set1_ps(max_val);
+    let mut vsum0 = _mm256_setzero_ps();
+    let mut vsum1 = _mm256_setzero_ps();
+    i = 0;
+    while i + 16 <= len {
+        let e0 = avx2_exp_f32(_mm256_sub_ps(_mm256_loadu_ps(ptr.add(i)), vm));
+        let e1 = avx2_exp_f32(_mm256_sub_ps(_mm256_loadu_ps(ptr.add(i + 8)), vm));
+        _mm256_storeu_ps(ptr.add(i), e0);
+        _mm256_storeu_ps(ptr.add(i + 8), e1);
+        vsum0 = _mm256_add_ps(vsum0, e0);
+        vsum1 = _mm256_add_ps(vsum1, e1);
+        i += 16;
+    }
+    while i + 8 <= len {
+        let e = avx2_exp_f32(_mm256_sub_ps(_mm256_loadu_ps(ptr.add(i)), vm));
+        _mm256_storeu_ps(ptr.add(i), e);
+        vsum0 = _mm256_add_ps(vsum0, e);
+        i += 8;
+    }
+    let mut sum = hsum256_ps(_mm256_add_ps(vsum0, vsum1));
+    while i < len {
+        let e = (*ptr.add(i) - max_val).exp();
+        *ptr.add(i) = e;
+        sum += e;
+        i += 1;
+    }
+
+    let inv = 1.0 / sum;
+    let vinv = _mm256_set1_ps(inv);
+    i = 0;
+    while i + 8 <= len {
+        _mm256_storeu_ps(ptr.add(i), _mm256_mul_ps(_mm256_loadu_ps(ptr.add(i)), vinv));
+        i += 8;
+    }
+    while i < len {
+        *ptr.add(i) *= inv;
+        i += 1;
+    }
+}
+
+/// `out[0..32] = sum_t p[t] * v[t]`, two rows per iteration into 8 independent accumulators.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn weighted_sum_head32_avx2(p: *const f32, v: *const f32, seq_len: usize, out: *mut f32) {
+    let mut a = [_mm256_setzero_ps(); 4];
+    let mut b = [_mm256_setzero_ps(); 4];
+    let mut t = 0usize;
+    while t + 2 <= seq_len {
+        let (pa, pb) = (_mm256_set1_ps(*p.add(t)), _mm256_set1_ps(*p.add(t + 1)));
+        let (ra, rb) = (v.add(t * 32), v.add(t * 32 + 32));
+        for j in 0..4 {
+            a[j] = _mm256_fmadd_ps(_mm256_loadu_ps(ra.add(8 * j)), pa, a[j]);
+            b[j] = _mm256_fmadd_ps(_mm256_loadu_ps(rb.add(8 * j)), pb, b[j]);
+        }
+        t += 2;
+    }
+    if t < seq_len {
+        let pa = _mm256_set1_ps(*p.add(t));
+        let ra = v.add(t * 32);
+        for j in 0..4 {
+            a[j] = _mm256_fmadd_ps(_mm256_loadu_ps(ra.add(8 * j)), pa, a[j]);
+        }
+    }
+    for j in 0..4 {
+        _mm256_storeu_ps(out.add(8 * j), _mm256_add_ps(a[j], b[j]));
     }
 }
 
