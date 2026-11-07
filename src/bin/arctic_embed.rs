@@ -7,11 +7,17 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 fn main() {
-    let args: Vec<String> = env::args().collect();
+    // Usage: arctic-embed [weights_dir] [--quick]
+    // `--quick` (used in CI) runs every section with ~20x fewer iterations: a smoke test with rough numbers.
+    let args: Vec<String> = env::args().skip(1).collect();
+    let quick = args.iter().any(|a| a == "--quick");
     let weights_dir = args
-        .get(1)
+        .iter()
+        .find(|a| !a.starts_with("--"))
         .map(PathBuf::from)
         .unwrap_or_else(arctic_embed_s_int8::default_weights_dir);
+    let iters_for = |n: usize| if quick { (n / 20).max(3) } else { n };
+    let warmup = iters_for(10);
 
     println!("=========================================================================");
     println!("  Snowflake Arctic-Embed-S — Pure-Rust Int8 CPU Inference Engine");
@@ -113,6 +119,7 @@ fn main() {
         ("Long   (128 tokens)", 128usize, 100usize),
         ("Max    (512 tokens)", 512usize, 30usize),
     ] {
+        let iters = iters_for(iters);
         let mut fake_ids = vec![101u16];
         for i in 0..(seq_len - 2) {
             fake_ids.push(2000 + (i as u16 % 1000));
@@ -120,7 +127,7 @@ fn main() {
         fake_ids.push(102u16);
 
         // Warmup
-        for _ in 0..10 {
+        for _ in 0..warmup {
             let _ = engine.embed_tokens(&fake_ids, &mut ws);
         }
 
@@ -155,12 +162,13 @@ fn main() {
             ("Long   (128 tokens)", 128usize, 100usize),
             ("Max    (512 tokens)", 512usize, 30usize),
         ] {
+            let iters = iters_for(iters);
             let mut ids = vec![101u16];
             for i in 0..(seq_len - 2) {
                 ids.push(2000 + (i as u16 % 1000));
             }
             ids.push(102u16);
-            for _ in 0..10 {
+            for _ in 0..warmup {
                 let _ = engine.embed_tokens_parallel(&ids, &mut par);
             }
             let start = Instant::now();
@@ -182,7 +190,7 @@ fn main() {
         };
         let l0 = &engine.model.layers[0];
         let m = 32usize;
-        let iters = 500usize;
+        let iters = iters_for(500);
 
         let t0 = Instant::now();
         for _ in 0..iters {
@@ -301,10 +309,10 @@ fn main() {
     for &b in &backends {
         let pm = PackedModel::from_raw(&raw, b);
         let mut out = [0.0f32; HIDDEN_SIZE];
-        for _ in 0..5 {
+        for _ in 0..iters_for(5) {
             pm.forward_cls(&bench_ids, &mut ws, &mut out);
         }
-        let iters = if b == SimdBackend::Scalar { 20 } else { 200 };
+        let iters = iters_for(if b == SimdBackend::Scalar { 20 } else { 200 });
         let start = Instant::now();
         for _ in 0..iters {
             pm.forward_cls(&bench_ids, &mut ws, &mut out);
@@ -326,7 +334,7 @@ fn main() {
     let num_cpus = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4);
-    let batch_size = 256;
+    let batch_size = if quick { 64 } else { 256 };
     let sample_docs: Vec<&str> = (0..batch_size)
         .map(|i| match i % 4 {
             0 => "Snowflake Arctic Embed is a suite of text embedding models optimized for retrieval performance.",

@@ -21,7 +21,8 @@ SIMD kernels for Linux and macOS on ARM64 and x86_64.
 | 128    | 4.91 ms  | 2.89 ms |
 | 512    | 31.3 ms  | 19.5 ms |
 
-Reproduce with `cargo run --release --bin arctic-embed`.
+Reproduce with `cargo run --release --bin arctic-embed` (add `-- --quick` for a fast smoke run with
+~20x fewer iterations, as CI does).
 
 ## Quick start
 

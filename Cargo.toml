@@ -34,3 +34,10 @@ lto = "fat"
 codegen-units = 1
 panic = "abort"
 strip = false
+
+# CI: release optimizations without fat LTO / single codegen unit, which dominate CI build time.
+# The crate has no dependencies, so LTO only affects inlining from std; results are unchanged.
+[profile.ci]
+inherits = "release"
+lto = false
+codegen-units = 16

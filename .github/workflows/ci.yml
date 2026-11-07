@@ -3,7 +3,10 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore: ["**.md", "LICENSE"]
   pull_request:
+    paths-ignore: ["**.md", "LICENSE"]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -14,42 +17,68 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
   ARCTIC_EMBED_WEIGHTS: ${{ github.workspace }}/weights
+  # Pinned in scripts/download_weights.sh; bump this suffix to invalidate the weights cache.
+  WEIGHTS_CACHE_KEY: weights-e596f507-v1
+
+# No `rust-cache`: the crate has zero dependencies, so there is nothing for it to cache (the
+# workspace crate itself is never cached), and the full build is ~20-40 s. Add it back if
+# dependencies are introduced.
 
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+          # Lint every architecture's cfg'd code from one runner (`clippy` doesn't link).
+          targets: aarch64-unknown-linux-gnu, aarch64-apple-darwin
       - run: cargo fmt --all --check
-      - run: cargo clippy --all-targets --release -- -D warnings
+      - name: clippy (x86_64-unknown-linux-gnu)
+        run: cargo clippy --all-targets -- -D warnings
+      - name: clippy (aarch64-unknown-linux-gnu)
+        run: cargo clippy --all-targets --target aarch64-unknown-linux-gnu -- -D warnings
+      - name: clippy (aarch64-apple-darwin)
+        run: cargo clippy --all-targets --target aarch64-apple-darwin -- -D warnings
 
   test:
-    # Covers the x86_64 (AVX2 / AVX-VNNI where present), Neoverse N2 (I8MM + SVE2) and Apple M1
-    # (DotProd / NEON) code paths. No hosted runner has SME (Apple M4), so the SME path and the
-    # intra-op parallel path are only exercised on local M4 hardware.
+    # x86_64 (AVX2 / AVX-VNNI where present), Neoverse N2 (I8MM + SVE2) and Apple M1 (DotProd / NEON).
+    # No hosted runner has SME2 (Apple M4), so the SME and intra-op parallel paths are only
+    # exercised on local M4 hardware.
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
       - name: Cache model weights
+        id: weights
         uses: actions/cache@v6
         with:
           path: weights
-          key: weights-${{ hashFiles('scripts/download_weights.sh') }}
-      - run: scripts/download_weights.sh
+          key: ${{ env.WEIGHTS_CACHE_KEY }}
+          # The weights are platform-independent: share one cache entry across all runners.
+          enableCrossOsArchive: true
+      - name: Download model weights
+        if: steps.weights.outputs.cache-hit != 'true'
+        run: scripts/download_weights.sh
       - name: Host CPU features
         run: |
           if [ "$RUNNER_OS" = macOS ]; then sysctl -a | grep -E 'hw.optional.arm.FEAT_(DotProd|I8MM|SME)' || true
           else grep -m1 -E '^(flags|Features)' /proc/cpuinfo; fi
-      - run: cargo test --release
-      - run: cargo run --release --bin arctic-embed
+      # Examples are compiled (and linted) by the lint job; skip linking them here.
+      - name: Build tests
+        run: cargo test --profile ci --lib --bins --tests --no-run
+      - name: Test
+        run: cargo test --profile ci --lib --bins --tests
+      - name: Benchmark (quick)
+        run: |
+          cargo run --profile ci --bin arctic-embed -- --quick | tee bench.txt
+          { echo "### Benchmark (\`--quick\`, ${{ matrix.os }})"; echo '```'; cat bench.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
