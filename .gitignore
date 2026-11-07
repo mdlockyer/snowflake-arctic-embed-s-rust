@@ -1,0 +1,6 @@
+.DS_Store
+/target/
+# Model files (fetch with scripts/download_weights.sh)
+/weights/
+*.ae8
+*.ae8p

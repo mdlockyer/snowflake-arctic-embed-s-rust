@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  ARCTIC_EMBED_WEIGHTS: ${{ github.workspace }}/weights
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --all-targets --release -- -D warnings
+
+  test:
+    # Covers the x86_64 (AVX2 / AVX-VNNI where present), Neoverse N2 (I8MM + SVE2) and Apple M1
+    # (DotProd / NEON) code paths. No hosted runner has SME (Apple M4), so the SME path and the
+    # intra-op parallel path are only exercised on local M4 hardware.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Cache model weights
+        uses: actions/cache@v6
+        with:
+          path: weights
+          key: weights-${{ hashFiles('scripts/download_weights.sh') }}
+      - run: scripts/download_weights.sh
+      - name: Host CPU features
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then sysctl -a | grep -E 'hw.optional.arm.FEAT_(DotProd|I8MM|SME)' || true
+          else grep -m1 -E '^(flags|Features)' /proc/cpuinfo; fi
+      - run: cargo test --release
+      - run: cargo run --release --bin arctic-embed
