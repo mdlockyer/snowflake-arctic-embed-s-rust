@@ -4,8 +4,6 @@
 
 use crate::gemm::{PackedLinearInt8, SimdBackend};
 #[cfg(feature = "convert")]
-use crate::simd_math::scalar_gelu;
-#[cfg(feature = "convert")]
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Read, Write};
@@ -256,7 +254,7 @@ impl QuantizedModelRaw {
                 &b_inter,
             );
             for v in inter.iter_mut() {
-                *v = scalar_gelu(*v);
+                *v = detmath::gelu(*v);
             }
 
             let w_out = st.get_f32(&format!("{}output.dense.weight", prefix))?;
@@ -499,7 +497,7 @@ fn compute_smooth_scales(
     }
     let mut s = vec![1.0f32; k];
     for j in 0..k {
-        s[j] = act_max[j].powf(alpha) / w_max[j].powf(1.0 - alpha);
+        s[j] = detmath::pow(act_max[j], alpha) / detmath::pow(w_max[j], 1.0 - alpha);
     }
     s
 }
@@ -585,7 +583,7 @@ fn attention_fp32(q: &[f32], k: &[f32], v: &[f32], seq_len: usize) -> Vec<f32> {
             }
             let mut sum_exp = 0.0f32;
             for s in scores.iter_mut() {
-                *s = (*s - max_s).exp();
+                *s = detmath::exp(*s - max_s);
                 sum_exp += *s;
             }
             for s in scores.iter_mut() {
@@ -793,4 +791,162 @@ fn read_linear<R: Read>(r: &mut R) -> io::Result<QuantizedLinearRaw> {
         bias,
         inv_smooth,
     })
+}
+
+/// Platform-independent `exp`/`ln`/`pow`/GELU for the converter.
+///
+/// libm implementations differ in the last bits between platforms (macOS vs glibc), which made the
+/// converted pack differ by platform. These use only `+ - * /`, comparisons and bit manipulation in
+/// `f64` — all correctly rounded by IEEE 754, and Rust never contracts them into FMAs — so the same
+/// checkpoint converts to a byte-identical `model.ae8` everywhere. Accuracy is ~1 ulp of `f64`,
+/// far below the `f32` results they feed.
+#[cfg(feature = "convert")]
+pub(crate) mod detmath {
+    const LN2_HI: f64 = 6.931_471_803_691_238_164_90e-1; // upper bits of ln 2 (exact product with small n)
+    const LN2_LO: f64 = 1.908_214_929_270_587_700_02e-10;
+    const LN2: f64 = std::f64::consts::LN_2;
+
+    /// `e^x` in `f64`: `x = n ln2 + r`, `|r| <= ln2/2`, degree-13 Taylor polynomial for `e^r`.
+    pub fn exp_f64(x: f64) -> f64 {
+        if x.is_nan() {
+            return x;
+        }
+        if x > 709.0 {
+            return f64::INFINITY;
+        }
+        if x < -745.0 {
+            return 0.0;
+        }
+        let n = (x / LN2).round();
+        let r = (x - n * LN2_HI) - n * LN2_LO;
+        // Horner evaluation of sum_{k=0}^{13} r^k / k!  (|r| <= 0.347: truncation error < 2e-17).
+        let mut p = 1.0 / factorial(13);
+        for k in (0..13).rev() {
+            p = p * r + 1.0 / factorial(k);
+        }
+        scale_by_pow2(p, n as i32)
+    }
+
+    fn factorial(k: u32) -> f64 {
+        (1..=k).fold(1.0, |acc, i| acc * i as f64)
+    }
+
+    /// `x * 2^n` by exponent manipulation (exact while the result is a normal number).
+    fn scale_by_pow2(x: f64, n: i32) -> f64 {
+        let mut x = x;
+        let mut n = n;
+        // Split large shifts so each factor is a representable power of two.
+        while n > 1000 {
+            x *= f64::from_bits(((1023 + 1000) as u64) << 52);
+            n -= 1000;
+        }
+        while n < -1000 {
+            x *= f64::from_bits(((1023 - 1000) as u64) << 52);
+            n += 1000;
+        }
+        x * f64::from_bits(((1023 + n) as u64) << 52)
+    }
+
+    /// Natural log for finite `x > 0`: `x = m 2^e` with `m` in `[sqrt(1/2), sqrt(2))`,
+    /// `ln m = 2 atanh(s)`, `s = (m-1)/(m+1)` (`|s| < 0.172`), odd series to `s^27`.
+    pub fn ln_f64(x: f64) -> f64 {
+        if x.is_nan() || x < 0.0 {
+            return f64::NAN;
+        }
+        if x == 0.0 {
+            return f64::NEG_INFINITY;
+        }
+        if x.is_infinite() {
+            return x;
+        }
+        let (mut m, mut e) = frexp(x);
+        if m < std::f64::consts::FRAC_1_SQRT_2 {
+            m *= 2.0;
+            e -= 1;
+        }
+        let s = (m - 1.0) / (m + 1.0);
+        let s2 = s * s;
+        let mut p = 1.0 / 27.0;
+        let mut k = 25i32;
+        while k >= 1 {
+            p = p * s2 + 1.0 / k as f64;
+            k -= 2;
+        }
+        2.0 * s * p + e as f64 * LN2
+    }
+
+    /// `x = m * 2^e` with `m` in `[0.5, 1)` (normal and subnormal `x > 0`).
+    fn frexp(x: f64) -> (f64, i32) {
+        let mut x = x;
+        let mut bias = 0;
+        if x < f64::MIN_POSITIVE {
+            x *= f64::from_bits((1023u64 + 54) << 52); // 2^54: normalize subnormals
+            bias = -54;
+        }
+        let bits = x.to_bits();
+        let e = ((bits >> 52) & 0x7ff) as i32 - 1022;
+        let m = f64::from_bits((bits & !(0x7ffu64 << 52)) | (1022u64 << 52));
+        (m, e + bias)
+    }
+
+    /// `e^x` for `f32` (computed in `f64`, rounded once).
+    pub fn exp(x: f32) -> f32 {
+        exp_f64(x as f64) as f32
+    }
+
+    /// `base^e` for `base >= 0` (`0^e = 0` for `e > 0`, as `powf`).
+    pub fn pow(base: f32, e: f32) -> f32 {
+        if base == 0.0 {
+            return if e > 0.0 {
+                0.0
+            } else if e == 0.0 {
+                1.0
+            } else {
+                f32::INFINITY
+            };
+        }
+        exp_f64(e as f64 * ln_f64(base as f64)) as f32
+    }
+
+    /// Exact-erf GELU via the Abramowitz–Stegun 7.1.26 form used by `simd_math::scalar_gelu`,
+    /// with the deterministic `exp`.
+    pub fn gelu(x: f32) -> f32 {
+        let z = x.abs() * std::f32::consts::FRAC_1_SQRT_2;
+        let t = 1.0 / (1.0 + 0.3275911 * z);
+        let poly = t
+            * (0.254829592
+                + t * (-0.284496736 + t * (1.421413741 + t * (-1.453152027 + t * 1.061405429))));
+        let erf_val = (1.0 - poly * exp(-z * z)).copysign(x);
+        0.5 * x * (1.0 + erf_val)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn matches_libm_closely() {
+            let mut worst_exp = 0.0f64;
+            let mut worst_ln = 0.0f64;
+            let mut x = -700.0f64;
+            while x < 700.0 {
+                let rel = ((exp_f64(x) - x.exp()) / x.exp()).abs();
+                worst_exp = worst_exp.max(rel);
+                x += 0.0137;
+            }
+            let mut y = 1e-300f64;
+            while y < 1e300 {
+                let rel = ((ln_f64(y) - y.ln()) / y.ln().abs().max(1e-300)).abs();
+                worst_ln = worst_ln.max(rel);
+                y *= 1.0137;
+            }
+            assert!(worst_exp < 1e-15, "exp rel err {worst_exp:e}");
+            assert!(worst_ln < 1e-15, "ln rel err {worst_ln:e}");
+            for &(b, e) in &[(3.7f32, 0.4f32), (0.013, 0.6), (250.0, 0.4), (1.0, 0.6)] {
+                let rel = ((pow(b, e) - b.powf(e)) / b.powf(e)).abs();
+                assert!(rel < 1e-6, "pow({b},{e}) rel err {rel:e}");
+            }
+            assert_eq!(pow(0.0, 0.4), 0.0);
+        }
+    }
 }

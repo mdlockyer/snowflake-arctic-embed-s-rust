@@ -5,7 +5,7 @@ Pure-Rust Int8 CPU inference for [`Snowflake/snowflake-arctic-embed-s`](https://
 SIMD kernels for Linux and macOS on ARM64 and x86_64.
 
 - **W8A8 SmoothQuant** with per-row dynamic activation quantization; embeddings stay within
-  cosine 0.9991 of the FP32 model (mean 0.9994 on short texts, 0.9993 on 124–512-token texts).
+  cosine 0.9990 of the FP32 model (mean 0.9994 on short texts, 0.9993 on 124–512-token texts).
 - **Runtime-selected kernels:** ARM64 SME2 (Apple M4 `smopa`), `FEAT_I8MM`, `DotProd`, NEON;
   x86_64 AVX-VNNI, AVX2; portable scalar fallback.
 - **Latency mode:** one sequence split across both SME units of an M4 Pro/Max (`ParallelContext`).

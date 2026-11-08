@@ -13,7 +13,7 @@ packs the weights for the host CPU's SIMD backend at startup (a few milliseconds
 - Source: [`Snowflake/snowflake-arctic-embed-s`](https://huggingface.co/Snowflake/snowflake-arctic-embed-s),
   revision `e596f507467533e48a2e17c007f0e1dacc837b33`
   (`model.safetensors` SHA-256 `0350e62666ee2403db0223fc7cef6293c951cc63d1d2e71468da9a5aea3b544a`).
-- `model.ae8` SHA-256: `89b7d536f4c37d18a042d958635277acbdb7f0ac741a85bde9027c2c6f7d61dc`.
+- `model.ae8` SHA-256: `d68b00aca78b143fb2fe3f8116eb2330d175f2a8318774725cf40bc906d564f1`.
 
 **Modifications:** `model.ae8` is a derived work of the original FP32 weights. It was produced by
 SmoothQuant calibration (alpha = 0.40) followed by symmetric per-row Int8 quantization of all
