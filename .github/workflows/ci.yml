@@ -18,24 +18,17 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
-  # Original FP32 checkpoint (convert job only). Pinned in scripts/download_weights.sh; bump the
-  # suffix to invalidate the cache.
-  WEIGHTS_CACHE_KEY: weights-e596f507-v1
-
-# No `rust-cache`: the crate has zero dependencies, so there is nothing for it to cache (the
-# workspace crate itself is never cached), and the full build is ~20-40 s. Add it back if
-# dependencies are introduced.
+  MODEL_CACHE_KEY: ae8-v1.0.0-d68b00ac
 
 jobs:
   lint:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-          # Lint every architecture's cfg'd code from one runner (`clippy` doesn't link).
           targets: aarch64-unknown-linux-gnu, aarch64-apple-darwin
       - run: cargo fmt --all --check
       - name: clippy (x86_64-unknown-linux-gnu)
@@ -44,13 +37,8 @@ jobs:
         run: cargo clippy --all-targets --target aarch64-unknown-linux-gnu -- -D warnings
       - name: clippy (aarch64-apple-darwin)
         run: cargo clippy --all-targets --target aarch64-apple-darwin -- -D warnings
-      - name: clippy (feature convert)
-        run: cargo clippy --all-targets --features convert -- -D warnings
 
   test:
-    # x86_64 (AVX2 / AVX-VNNI where present), Neoverse N2 (I8MM + SVE2) and Apple M1 (DotProd / NEON).
-    # No hosted runner has SME2 (Apple M4), so the SME and intra-op parallel paths are only
-    # exercised on local M4 hardware.
     strategy:
       fail-fast: false
       matrix:
@@ -58,14 +46,20 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      # The model pack is committed in model/, so no download is needed.
+      - name: Cache .ae8 model pack
+        id: model
+        uses: actions/cache@v4
+        with:
+          path: model/model.ae8
+          key: ${{ env.MODEL_CACHE_KEY }}
+      - name: Fetch .ae8 model pack
+        run: scripts/fetch_model.sh
       - name: Host CPU features
         run: |
           if [ "$RUNNER_OS" = macOS ]; then sysctl -a | grep -E 'hw.optional.arm.FEAT_(DotProd|I8MM|SME)' || true
           else grep -m1 -E '^(flags|Features)' /proc/cpuinfo; fi
-      # Examples are compiled (and linted) by the lint job; skip linking them here.
       - name: Build tests
         run: cargo test --profile ci --lib --bins --tests --no-run
       - name: Test
@@ -74,23 +68,3 @@ jobs:
         run: |
           cargo run --profile ci --bin arctic-embed -- --quick | tee bench.txt
           { echo "### Benchmark (\`--quick\`, ${{ matrix.os }})"; echo '```'; cat bench.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-
-  convert:
-    # Rebuilds model/model.ae8 from the pinned FP32 checkpoint and requires it to be byte-identical
-    # to the committed pack (also checks the conversion is deterministic across platforms).
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Cache FP32 checkpoint
-        id: weights
-        uses: actions/cache@v6
-        with:
-          path: weights
-          key: ${{ env.WEIGHTS_CACHE_KEY }}
-      - name: Download FP32 checkpoint
-        if: steps.weights.outputs.cache-hit != 'true'
-        run: scripts/download_weights.sh
-      - name: Committed pack matches conversion
-        run: cargo test --profile ci --features convert --test convert_test

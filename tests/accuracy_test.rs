@@ -151,7 +151,7 @@ fn test_tokenizer_and_int8_accuracy_against_fp32_reference() {
 }
 
 #[test]
-fn test_all_simd_backends_and_ae8_roundtrip_bit_identical() {
+fn test_all_simd_backends_match_scalar() {
     let model_dir = common::model_dir();
     let raw = QuantizedModelRaw::load_ae8(model_dir.join("model.ae8")).expect("load model.ae8");
     let tok = BertTokenizer::from_vocab_file(model_dir.join("vocab.txt")).expect("load vocab");
@@ -199,27 +199,7 @@ fn test_all_simd_backends_and_ae8_roundtrip_bit_identical() {
         );
     }
 
-    // Test .ae8 serialization round-trip
-    let tmp_ae8 = std::env::temp_dir().join("test_arctic_embed_s.ae8");
-    raw.save_ae8(&tmp_ae8).expect("save .ae8");
-    let loaded_raw = QuantizedModelRaw::load_ae8(&tmp_ae8).expect("load .ae8");
-    let _ = fs::remove_file(&tmp_ae8);
-
-    let mut detected_out = [0.0f32; HIDDEN_SIZE];
-    PackedModel::from_raw(&raw, SimdBackend::detect()).forward_cls(
-        &ids,
-        &mut ws,
-        &mut detected_out,
-    );
-
-    let mut loaded_out = [0.0f32; HIDDEN_SIZE];
-    let packed_detected = PackedModel::from_raw(&loaded_raw, SimdBackend::detect());
-    packed_detected.forward_cls(&ids, &mut ws, &mut loaded_out);
-    assert_eq!(
-        detected_out, loaded_out,
-        ".ae8 roundtrip must be bit-identical"
-    );
-
+    let packed_detected = PackedModel::from_raw(&raw, SimdBackend::detect());
     assert_eq!(
         packed_detected.layers[11].qkv.packed_w.len(),
         0,

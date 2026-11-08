@@ -10,8 +10,7 @@ SIMD kernels for Linux and macOS on ARM64 and x86_64.
   x86_64 AVX-VNNI, AVX2; portable scalar fallback.
 - **Latency mode:** one sequence split across both SME units of an M4 Pro/Max (`ParallelContext`).
 - **Throughput mode:** multi-threaded ragged batching (`embed_batch`).
-- **Self-contained:** the quantized model (`model/model.ae8`, 34 MB) is committed; it loads and
-  is packed for the host CPU in ~8 ms. No download needed to run.
+- **Fast startup:** the pre-quantized `.ae8` model pack (33.8 MB) loads and is packed for the host CPU in ~10 ms.
 
 ## Performance (Apple M4 Max, SME backend)
 
@@ -28,7 +27,8 @@ Reproduce with `cargo run --release --bin arctic-embed` (add `-- --quick` for a 
 ## Quick start
 
 ```bash
-cargo run --release --bin arctic-embed   # uses the committed model/ pack
+scripts/fetch_model.sh                    # fetches model/model.ae8 (v1.0.0, SHA-256 verified)
+cargo run --release --bin arctic-embed    # runs retrieval demo & benchmark suite
 ```
 
 ```rust
@@ -53,58 +53,43 @@ sentence-transformers pipeline. Inputs are truncated to 512 tokens.
 
 ## Model files
 
-The library reads exactly one format: a model directory with `model.ae8` (Int8 SmoothQuant
-weights) and `vocab.txt`. This repository ships one in [`model/`](model/README.md); the binary,
-examples and tests use it, or `$ARCTIC_EMBED_MODEL_DIR` if set. `model.ae8` is backend-neutral and
-is packed for the host's SIMD backend at load time.
+The library reads a model directory containing `model.ae8` (Int8 SmoothQuant weights) and `vocab.txt`.
+`model.ae8` is backend-neutral and is built by [`snowflake-arctic-embed-s-weights`](https://github.com/mdlockyer/snowflake-arctic-embed-s-weights)
+(also mirrored in [`snowflake-arctic-embed-s-swift`](https://github.com/mdlockyer/snowflake-arctic-embed-s-swift)).
 
-The pack is built from the original FP32 checkpoint by an opt-in converter, which is the only
-code that reads safetensors:
+Fetch the pinned release pack into `./model` with:
 
 ```bash
-scripts/download_weights.sh   # pinned Hub revision e596f50, SHA-256 verified, into ./weights
-cargo run --release --features convert --bin arctic-embed-convert -- weights/model.safetensors model/model.ae8
+scripts/fetch_model.sh
 ```
-
-Conversion is deterministic; CI rebuilds the pack and fails if it differs from the committed one.
-The pack is not included in the crates.io package (it exceeds the size limit).
 
 ## Testing
 
 ```bash
+scripts/fetch_model.sh
 cargo test --release
 ```
 
 | Test | Checks |
 |------|--------|
-| `accuracy_test` | Tokenizer ids and embeddings vs. FP32 reference vectors; every SIMD backend the host supports; `.ae8` round-trip |
-| `long_accuracy_test` | 124–512-token texts vs. a float64 reference (`scripts/fp32_reference.py`) |
+| `accuracy_test` | Tokenizer ids and embeddings vs. FP32 reference vectors; every SIMD backend the host supports |
+| `long_accuracy_test` | 124–512-token texts vs. a float64 reference |
 | `parallel_test` | `ParallelContext` output is bit-identical to the single-threaded forward pass (SME only) |
-| `convert_test` | `--features convert`: converting the pinned checkpoint reproduces `model/model.ae8` byte for byte |
 
 CI runs on x86_64 Linux, Neoverse N2 Linux (I8MM/SVE2) and Apple M1 macOS. No hosted runner has
 SME, so the SME and intra-op parallel paths are only tested on local Apple M4 hardware.
-
-Regenerating the long-sequence reference (needs Python with NumPy and the FP32 checkpoint from
-`scripts/download_weights.sh`):
-
-```bash
-cargo run --release --example dump_ids -- model tests/data/long_texts.txt /tmp/long_ids.json
-python3 -I scripts/fp32_reference.py embed weights /tmp/long_ids.json tests/data/long_reference_vectors.json
-```
 
 ## Layout
 
 | Path | Contents |
 |------|----------|
-| `src/quantize.rs` | `.ae8` pack format; safetensors import + SmoothQuant calibration (feature `convert`) |
+| `src/quantize.rs` | `.ae8` binary model loader (`QuantizedModelRaw`) |
 | `src/gemm.rs` | Backend detection and Int8 GEMM kernels (SME, I8MM, DotProd, NEON, AVX-VNNI, AVX2) |
 | `src/simd_math.rs` | Attention, softmax, GELU, LayerNorm and quantization kernels |
 | `src/model.rs` | Per-backend packed model and forward pass |
 | `src/parallel.rs` | Intra-op multi-core forward pass for one sequence |
 | `src/tokenizer.rs` | BERT WordPiece tokenizer |
-| `src/bin/convert.rs` | `arctic-embed-convert`: safetensors → `model.ae8` |
-| `model/` | Committed model pack and its provenance |
+| `scripts/fetch_model.sh` | Fetches `model.ae8` + `vocab.txt` from `snowflake-arctic-embed-s-weights` |
 | `examples/` | Profiling and micro-benchmarks |
 
 ## Model
