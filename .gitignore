@@ -1,6 +1,4 @@
 .DS_Store
 /target/
-# Model files (fetch with scripts/download_weights.sh)
+# Original FP32 checkpoint, only needed to rebuild model/model.ae8 (scripts/download_weights.sh)
 /weights/
-*.ae8
-*.ae8p

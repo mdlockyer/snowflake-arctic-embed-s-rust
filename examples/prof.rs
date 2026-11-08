@@ -5,7 +5,7 @@ fn main() {
     let a: Vec<String> = std::env::args().collect();
     let seq: usize = a.get(1).map(|s| s.parse().unwrap()).unwrap_or(32);
     let secs: f64 = a.get(2).map(|s| s.parse().unwrap()).unwrap_or(5.0);
-    let e = ArcticEmbedS::from_dir(arctic_embed_s_int8::default_weights_dir()).unwrap();
+    let e = ArcticEmbedS::from_dir(arctic_embed_s_int8::default_model_dir()).unwrap();
     let mut ws = Workspace::new();
     let mut ids = vec![101u16];
     for i in 0..seq - 2 {

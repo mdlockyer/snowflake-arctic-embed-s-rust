@@ -66,7 +66,7 @@ fn parse_ref_records(json_str: &str) -> Vec<RefRecord> {
 
 #[test]
 fn test_tokenizer_and_int8_accuracy_against_fp32_reference() {
-    let weights_dir = common::weights_dir();
+    let model_dir = common::model_dir();
     let ref_json = fs::read_to_string(
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/reference_test_vectors.json"),
     )
@@ -74,7 +74,7 @@ fn test_tokenizer_and_int8_accuracy_against_fp32_reference() {
     let records = parse_ref_records(&ref_json);
     assert_eq!(records.len(), 12);
 
-    let engine = ArcticEmbedS::from_dir(&weights_dir).expect("load ArcticEmbedS");
+    let engine = ArcticEmbedS::from_dir(&model_dir).expect("load ArcticEmbedS");
     let mut ws = Workspace::new();
 
     let mut cos_sum = 0.0f32;
@@ -152,10 +152,9 @@ fn test_tokenizer_and_int8_accuracy_against_fp32_reference() {
 
 #[test]
 fn test_all_simd_backends_and_ae8_roundtrip_bit_identical() {
-    let weights_dir = common::weights_dir();
-    let raw = QuantizedModelRaw::from_safetensors_file(weights_dir.join("model.safetensors"))
-        .expect("load safetensors");
-    let tok = BertTokenizer::from_vocab_file(weights_dir.join("vocab.txt")).expect("load vocab");
+    let model_dir = common::model_dir();
+    let raw = QuantizedModelRaw::load_ae8(model_dir.join("model.ae8")).expect("load model.ae8");
+    let tok = BertTokenizer::from_vocab_file(model_dir.join("vocab.txt")).expect("load vocab");
 
     let ids = tok.encode_query("what is snowflake?");
     let mut ws = Workspace::new();
@@ -221,30 +220,9 @@ fn test_all_simd_backends_and_ae8_roundtrip_bit_identical() {
         ".ae8 roundtrip must be bit-identical"
     );
 
-    // Test zero-copy 64-byte-aligned .ae8p mmap round-trip
-    let tmp_ae8p = std::env::temp_dir().join("test_arctic_embed_s.ae8p");
-    packed_detected.save_ae8p(&tmp_ae8p).expect("save .ae8p");
-    let mmap_model = PackedModel::load_ae8p_mmap(&tmp_ae8p).expect("load .ae8p via mmap");
-    let _ = fs::remove_file(&tmp_ae8p);
-
-    assert!(
-        mmap_model.word_emb_q.is_mmap(),
-        "word_emb_q must be mmap-backed"
-    );
-    assert!(
-        mmap_model.layers[0].qkv.packed_w.is_mmap(),
-        "qkv.packed_w must be mmap-backed"
-    );
     assert_eq!(
-        mmap_model.layers[11].qkv.packed_w.len(),
+        packed_detected.layers[11].qkv.packed_w.len(),
         0,
         "Layer 11 dead qkv must be pruned"
-    );
-
-    let mut mmap_out = [0.0f32; HIDDEN_SIZE];
-    mmap_model.forward_cls(&ids, &mut ws, &mut mmap_out);
-    assert_eq!(
-        detected_out, mmap_out,
-        ".ae8p zero-copy mmap roundtrip must be bit-identical"
     );
 }

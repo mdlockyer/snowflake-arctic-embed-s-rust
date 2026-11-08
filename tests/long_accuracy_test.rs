@@ -43,13 +43,13 @@ fn parse(json: &str) -> Vec<LongRecord> {
 
 #[test]
 fn test_long_sequence_accuracy_against_fp64_reference() {
-    let weights_dir = common::weights_dir();
+    let model_dir = common::model_dir();
     let data =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/long_reference_vectors.json");
     let records = parse(&std::fs::read_to_string(data).expect("long_reference_vectors.json"));
     assert_eq!(records.len(), 7);
 
-    let engine = ArcticEmbedS::from_dir(&weights_dir).expect("load ArcticEmbedS");
+    let engine = ArcticEmbedS::from_dir(&model_dir).expect("load ArcticEmbedS");
     let mut ws = Workspace::new();
     let (mut sum, mut min) = (0.0f32, 1.0f32);
     for rec in &records {

@@ -7,7 +7,7 @@ use arctic_embed_s_int8::{cosine_similarity, ArcticEmbedS};
 
 #[test]
 fn test_parallel_forward_matches_single_thread() {
-    let engine = ArcticEmbedS::from_dir(common::weights_dir()).expect("load");
+    let engine = ArcticEmbedS::from_dir(common::model_dir()).expect("load");
     if engine.model.backend != SimdBackend::ArmSme {
         // Without SME the context always takes the single-threaded path, so this would only
         // compare the single-threaded forward pass with itself (and is slow on small CI runners).
@@ -52,7 +52,7 @@ fn test_parallel_forward_matches_single_thread() {
 /// still pick that job up (it used to read the already-advanced epoch and park forever).
 #[test]
 fn test_fresh_contexts_first_call_completes() {
-    let engine = ArcticEmbedS::from_dir(common::weights_dir()).expect("load");
+    let engine = ArcticEmbedS::from_dir(common::model_dir()).expect("load");
     let mut ws = Workspace::new();
     let ids = [101u16, 2023, 2003, 1037, 3231, 102];
     let single = engine.embed_tokens(&ids, &mut ws);

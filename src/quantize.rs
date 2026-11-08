@@ -1,8 +1,11 @@
-//! Zero-dependency `safetensors` parser, SmoothQuant-calibrated W8A8 weight quantizer,
-//! and portable `.ae8` binary quantized model format.
+//! The portable `.ae8` quantized model pack (the only format the runtime reads), and — behind the
+//! `convert` cargo feature — the zero-dependency `safetensors` parser and SmoothQuant-calibrated
+//! W8A8 quantizer that produce it from the original FP32 checkpoint.
 
 use crate::gemm::{PackedLinearInt8, SimdBackend};
+#[cfg(feature = "convert")]
 use crate::simd_math::scalar_gelu;
+#[cfg(feature = "convert")]
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Read, Write};
@@ -74,6 +77,7 @@ pub struct QuantizedModelRaw {
 }
 
 impl QuantizedModelRaw {
+    #[cfg(feature = "convert")]
     /// Loads FP32 weights from `model.safetensors`, runs deterministic SmoothQuant calibration
     /// (`alpha = 0.40`), and quantizes all weights & embedding tables to symmetric Int8.
     pub fn from_safetensors_file<P: AsRef<Path>>(path: P) -> io::Result<Self> {
@@ -81,6 +85,7 @@ impl QuantizedModelRaw {
         Self::from_safetensors_bytes(&bytes)
     }
 
+    #[cfg(feature = "convert")]
     pub fn from_safetensors_bytes(bytes: &[u8]) -> io::Result<Self> {
         let st = SafeTensorsView::parse(bytes)?;
 
@@ -439,6 +444,7 @@ impl QuantizedModelRaw {
     }
 }
 
+#[cfg(feature = "convert")]
 fn quantize_rows_i8(data: &[f32], rows: usize, cols: usize) -> (Vec<i8>, Vec<f32>) {
     let mut q = vec![0i8; rows * cols];
     let mut scales = vec![0.0f32; rows];
@@ -462,6 +468,7 @@ fn quantize_rows_i8(data: &[f32], rows: usize, cols: usize) -> (Vec<i8>, Vec<f32
     (q, scales)
 }
 
+#[cfg(feature = "convert")]
 fn compute_smooth_scales(
     x: &[f32],
     m: usize,
@@ -497,6 +504,7 @@ fn compute_smooth_scales(
     s
 }
 
+#[cfg(feature = "convert")]
 fn quantize_linear_with_smooth(
     n_out: usize,
     k_in: usize,
@@ -524,6 +532,7 @@ fn quantize_linear_with_smooth(
     }
 }
 
+#[cfg(feature = "convert")]
 fn layernorm_f32_row(row: &mut [f32], gamma: &[f32], beta: &[f32]) {
     let n = row.len();
     let mean = row.iter().sum::<f32>() / (n as f32);
@@ -534,6 +543,7 @@ fn layernorm_f32_row(row: &mut [f32], gamma: &[f32], beta: &[f32]) {
     }
 }
 
+#[cfg(feature = "convert")]
 fn matmul_fp32(a: &[f32], m: usize, k: usize, w: &[f32], n: usize, bias: &[f32]) -> Vec<f32> {
     let mut out = vec![0.0f32; m * n];
     for r in 0..m {
@@ -551,6 +561,7 @@ fn matmul_fp32(a: &[f32], m: usize, k: usize, w: &[f32], n: usize, bias: &[f32])
     out
 }
 
+#[cfg(feature = "convert")]
 fn attention_fp32(q: &[f32], k: &[f32], v: &[f32], seq_len: usize) -> Vec<f32> {
     let mut ctx = vec![0.0f32; seq_len * HIDDEN_SIZE];
     let scale = 1.0 / (HEAD_DIM as f32).sqrt();
@@ -593,12 +604,14 @@ fn attention_fp32(q: &[f32], k: &[f32], v: &[f32], seq_len: usize) -> Vec<f32> {
     ctx
 }
 
+#[cfg(feature = "convert")]
 /// Minimal zero-dependency `safetensors` parser.
 struct SafeTensorsView<'a> {
     data: &'a [u8],
     offsets: HashMap<String, (usize, usize)>,
 }
 
+#[cfg(feature = "convert")]
 impl<'a> SafeTensorsView<'a> {
     fn parse(bytes: &'a [u8]) -> io::Result<Self> {
         if bytes.len() < 8 {
@@ -651,6 +664,7 @@ impl<'a> SafeTensorsView<'a> {
 }
 
 /// Parses `"tensor_name":{"dtype":"F32","shape":[...],"data_offsets":[start,end]}` entries.
+#[cfg(feature = "convert")]
 fn parse_safetensors_header(s: &str) -> io::Result<HashMap<String, (usize, usize)>> {
     let mut map = HashMap::new();
     let mut pos = 0usize;

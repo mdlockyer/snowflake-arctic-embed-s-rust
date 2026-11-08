@@ -1,0 +1,2 @@
+# Quantized model pack: binary, never diff or merge textually.
+*.ae8 binary

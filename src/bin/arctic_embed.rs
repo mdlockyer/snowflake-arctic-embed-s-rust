@@ -7,15 +7,15 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 fn main() {
-    // Usage: arctic-embed [weights_dir] [--quick]
+    // Usage: arctic-embed [model_dir] [--quick]
     // `--quick` (used in CI) runs every section with ~20x fewer iterations: a smoke test with rough numbers.
     let args: Vec<String> = env::args().skip(1).collect();
     let quick = args.iter().any(|a| a == "--quick");
-    let weights_dir = args
+    let model_dir = args
         .iter()
         .find(|a| !a.starts_with("--"))
         .map(PathBuf::from)
-        .unwrap_or_else(arctic_embed_s_int8::default_weights_dir);
+        .unwrap_or_else(arctic_embed_s_int8::default_model_dir);
     let iters_for = |n: usize| if quick { (n / 20).max(3) } else { n };
     let warmup = iters_for(10);
 
@@ -31,28 +31,16 @@ fn main() {
     println!("Active SIMD ISA: {}", detected.name());
 
     let t0 = Instant::now();
-    let raw = QuantizedModelRaw::from_safetensors_file(weights_dir.join("model.safetensors"))
-        .expect("Failed to load and quantize model.safetensors");
-    let quant_ms = t0.elapsed().as_secs_f64() * 1000.0;
+    let raw = QuantizedModelRaw::load_ae8(model_dir.join(arctic_embed_s_int8::MODEL_FILE))
+        .unwrap_or_else(|e| panic!("Failed to load {}/model.ae8: {e}", model_dir.display()));
+    let load_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
     let t_pack = Instant::now();
     let packed_model = PackedModel::from_raw(&raw, detected);
     let pack_ms = t_pack.elapsed().as_secs_f64() * 1000.0;
 
-    // Benchmark zero-copy 64-byte-aligned .ae8p mmap load latency
-    let tmp_ae8p = std::env::temp_dir().join("bench_arctic_embed_s.ae8p");
-    packed_model
-        .save_ae8p(&tmp_ae8p)
-        .expect("Failed to save .ae8p");
-    let t_mmap = Instant::now();
-    let mmap_model = PackedModel::load_ae8p_mmap(&tmp_ae8p).expect("Failed to mmap .ae8p");
-    let mmap_us = t_mmap.elapsed().as_secs_f64() * 1e6;
-    std::hint::black_box(mmap_model.word_emb_q[0]);
-    drop(mmap_model);
-    let _ = std::fs::remove_file(&tmp_ae8p);
-
     let tokenizer = arctic_embed_s_int8::tokenizer::BertTokenizer::from_vocab_file(
-        weights_dir.join("vocab.txt"),
+        model_dir.join(arctic_embed_s_int8::VOCAB_FILE),
     )
     .expect("Failed to load vocab.txt");
 
@@ -67,8 +55,10 @@ fn main() {
         engine.raw_size_bytes as f64 / (1024.0 * 1024.0)
     );
     println!(
-        "Init Latency   : {:.2} ms (SmoothQuant + quantize), {:.2} ms (SIMD B-pack), {:.1} µs (Zero-Copy .ae8p mmap)",
-        quant_ms, pack_ms, mmap_us
+        "Init Latency   : {:.2} ms (read model.ae8) + {:.2} ms (SIMD pack for {})",
+        load_ms,
+        pack_ms,
+        detected.name()
     );
     println!("-------------------------------------------------------------------------");
 

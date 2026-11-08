@@ -18,8 +18,8 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
-  ARCTIC_EMBED_WEIGHTS: ${{ github.workspace }}/weights
-  # Pinned in scripts/download_weights.sh; bump this suffix to invalidate the weights cache.
+  # Original FP32 checkpoint (convert job only). Pinned in scripts/download_weights.sh; bump the
+  # suffix to invalidate the cache.
   WEIGHTS_CACHE_KEY: weights-e596f507-v1
 
 # No `rust-cache`: the crate has zero dependencies, so there is nothing for it to cache (the
@@ -44,6 +44,8 @@ jobs:
         run: cargo clippy --all-targets --target aarch64-unknown-linux-gnu -- -D warnings
       - name: clippy (aarch64-apple-darwin)
         run: cargo clippy --all-targets --target aarch64-apple-darwin -- -D warnings
+      - name: clippy (feature convert)
+        run: cargo clippy --all-targets --features convert -- -D warnings
 
   test:
     # x86_64 (AVX2 / AVX-VNNI where present), Neoverse N2 (I8MM + SVE2) and Apple M1 (DotProd / NEON).
@@ -58,17 +60,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-      - name: Cache model weights
-        id: weights
-        uses: actions/cache@v6
-        with:
-          path: weights
-          key: ${{ env.WEIGHTS_CACHE_KEY }}
-          # The weights are platform-independent: share one cache entry across all runners.
-          enableCrossOsArchive: true
-      - name: Download model weights
-        if: steps.weights.outputs.cache-hit != 'true'
-        run: scripts/download_weights.sh
+      # The model pack is committed in model/, so no download is needed.
       - name: Host CPU features
         run: |
           if [ "$RUNNER_OS" = macOS ]; then sysctl -a | grep -E 'hw.optional.arm.FEAT_(DotProd|I8MM|SME)' || true
@@ -82,3 +74,23 @@ jobs:
         run: |
           cargo run --profile ci --bin arctic-embed -- --quick | tee bench.txt
           { echo "### Benchmark (\`--quick\`, ${{ matrix.os }})"; echo '```'; cat bench.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+  convert:
+    # Rebuilds model/model.ae8 from the pinned FP32 checkpoint and requires it to be byte-identical
+    # to the committed pack (also checks the conversion is deterministic across platforms).
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache FP32 checkpoint
+        id: weights
+        uses: actions/cache@v6
+        with:
+          path: weights
+          key: ${{ env.WEIGHTS_CACHE_KEY }}
+      - name: Download FP32 checkpoint
+        if: steps.weights.outputs.cache-hit != 'true'
+        run: scripts/download_weights.sh
+      - name: Committed pack matches conversion
+        run: cargo test --profile ci --features convert --test convert_test

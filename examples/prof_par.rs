@@ -7,7 +7,7 @@ fn main() {
     let seq: usize = a.get(1).map(|s| s.parse().unwrap()).unwrap_or(32);
     let secs: f64 = a.get(2).map(|s| s.parse().unwrap()).unwrap_or(2.0);
     let threads: usize = a.get(3).map(|s| s.parse().unwrap()).unwrap_or(2);
-    let e = ArcticEmbedS::from_dir(arctic_embed_s_int8::default_weights_dir()).unwrap();
+    let e = ArcticEmbedS::from_dir(arctic_embed_s_int8::default_model_dir()).unwrap();
     let mut ids = vec![101u16];
     for i in 0..seq - 2 {
         ids.push(2000 + (i as u16 % 1000));

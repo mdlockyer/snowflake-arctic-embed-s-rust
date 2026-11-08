@@ -14,15 +14,20 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// Environment variable that points at the model directory (`vocab.txt` + `model.safetensors`).
-pub const WEIGHTS_ENV_VAR: &str = "ARCTIC_EMBED_WEIGHTS";
+/// File name of the quantized model pack inside a model directory (see [`ArcticEmbedS::from_dir`]).
+pub const MODEL_FILE: &str = "model.ae8";
+/// File name of the WordPiece vocabulary inside a model directory.
+pub const VOCAB_FILE: &str = "vocab.txt";
 
-/// Model directory used by the bundled binary, examples and tests: `$ARCTIC_EMBED_WEIGHTS` if set,
-/// otherwise `./weights` (where `scripts/download_weights.sh` puts the files).
-pub fn default_weights_dir() -> PathBuf {
-    std::env::var_os(WEIGHTS_ENV_VAR)
+/// Environment variable that overrides the model directory (`vocab.txt` + `model.ae8`).
+pub const MODEL_DIR_ENV_VAR: &str = "ARCTIC_EMBED_MODEL_DIR";
+
+/// Model directory used by the bundled binary and examples: `$ARCTIC_EMBED_MODEL_DIR` if set,
+/// otherwise `./model` (the pack committed in this repository, when run from its root).
+pub fn default_model_dir() -> PathBuf {
+    std::env::var_os(MODEL_DIR_ENV_VAR)
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("weights"))
+        .unwrap_or_else(|| PathBuf::from("model"))
 }
 
 /// High-performance Pure-Rust Int8 inference engine for `Snowflake/snowflake-arctic-embed-s`.
@@ -33,38 +38,30 @@ pub struct ArcticEmbedS {
 }
 
 impl ArcticEmbedS {
-    /// Loads `vocab.txt` and either pre-quantized `model.ae8` or `model.safetensors` from `dir`.
-    /// Automatically selects the fastest SIMD backend supported by the host CPU.
+    /// Loads `vocab.txt` and the quantized model pack `model.ae8` from `dir`, and packs the weights
+    /// for the fastest SIMD backend the host CPU supports (a few milliseconds).
+    ///
+    /// The pack is produced from the original `model.safetensors` by the `arctic-embed-convert`
+    /// tool (cargo feature `convert`); the library itself reads no other format.
     pub fn from_dir<P: AsRef<Path>>(dir: P) -> io::Result<Self> {
         Self::from_dir_with_backend(dir, SimdBackend::detect())
     }
 
-    /// Loads `vocab.txt` and either zero-copy memory-mapped `model.ae8p`, `model.ae8`, or `model.safetensors` from `dir`.
+    /// Like [`from_dir`](Self::from_dir) with an explicit backend. The backend must be supported
+    /// by the host CPU ([`SimdBackend::is_supported`]); otherwise this returns an error.
     pub fn from_dir_with_backend<P: AsRef<Path>>(dir: P, backend: SimdBackend) -> io::Result<Self> {
-        let dir = dir.as_ref();
-        let vocab_path = dir.join("vocab.txt");
-        let ae8p_path = dir.join("model.ae8p");
-        let ae8_path = dir.join("model.ae8");
-        let st_path = dir.join("model.safetensors");
-
-        let tokenizer = BertTokenizer::from_vocab_file(&vocab_path)?;
-        if ae8p_path.exists() {
-            if let Ok(model) = PackedModel::load_ae8p_mmap(&ae8p_path) {
-                if model.backend == backend {
-                    let raw_size_bytes = model.size_bytes();
-                    return Ok(Self {
-                        tokenizer,
-                        model,
-                        raw_size_bytes,
-                    });
-                }
-            }
+        if !backend.is_supported() {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!(
+                    "SIMD backend {} is not supported by this CPU",
+                    backend.name()
+                ),
+            ));
         }
-        let raw = if ae8_path.exists() {
-            QuantizedModelRaw::load_ae8(&ae8_path)?
-        } else {
-            QuantizedModelRaw::from_safetensors_file(&st_path)?
-        };
+        let dir = dir.as_ref();
+        let tokenizer = BertTokenizer::from_vocab_file(dir.join(VOCAB_FILE))?;
+        let raw = QuantizedModelRaw::load_ae8(dir.join(MODEL_FILE))?;
         let model = PackedModel::from_raw(&raw, backend);
         let raw_size_bytes = model.size_bytes();
         Ok(Self {

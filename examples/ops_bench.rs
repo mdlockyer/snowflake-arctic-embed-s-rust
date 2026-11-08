@@ -14,7 +14,7 @@ fn t<F: FnMut()>(iters: usize, mut f: F) -> f64 {
     s.elapsed().as_secs_f64() * 1e6 / iters as f64
 }
 fn main() {
-    let e = ArcticEmbedS::from_dir(arctic_embed_s_int8::default_weights_dir()).unwrap();
+    let e = ArcticEmbedS::from_dir(arctic_embed_s_int8::default_model_dir()).unwrap();
     let mut ws = Workspace::new();
     for (i, v) in ws.act_q.iter_mut().enumerate() {
         *v = ((i * 7919) % 255) as i8;

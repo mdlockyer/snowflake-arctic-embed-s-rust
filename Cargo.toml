@@ -9,7 +9,8 @@ repository = "https://github.com/mdlockyer/snowflake-arctic-embed-s-rust"
 readme = "README.md"
 keywords = ["embeddings", "bert", "int8", "inference", "simd"]
 categories = ["science", "text-processing"]
-exclude = ["/weights", "/scripts", "/.github"]
+# model/ (34 MB) exceeds the crates.io size limit; use the repository or a release artifact.
+exclude = ["/model", "/weights", "/scripts", "/.github"]
 
 [lib]
 name = "arctic_embed_s_int8"
@@ -18,6 +19,15 @@ path = "src/lib.rs"
 [[bin]]
 name = "arctic-embed"
 path = "src/bin/arctic_embed.rs"
+
+[[bin]]
+name = "arctic-embed-convert"
+path = "src/bin/convert.rs"
+required-features = ["convert"]
+
+[features]
+# safetensors import + SmoothQuant calibration, only needed to (re)build `model/model.ae8`.
+convert = []
 
 [dependencies]
 

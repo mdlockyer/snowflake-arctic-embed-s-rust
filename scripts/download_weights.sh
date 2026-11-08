@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# Downloads the Snowflake/snowflake-arctic-embed-s files this crate needs, pinned to a fixed Hub
-# revision and verified by SHA-256.
-#   usage: scripts/download_weights.sh [dest_dir]   (default: ./weights, or $ARCTIC_EMBED_WEIGHTS)
+# Downloads the original FP32 Snowflake/snowflake-arctic-embed-s checkpoint, pinned to a fixed Hub
+# revision and verified by SHA-256. Only needed to rebuild model/model.ae8 (feature `convert`) or
+# run scripts/fp32_reference.py; inference uses the pack committed in model/.
+#   usage: scripts/download_weights.sh [dest_dir]   (default: ./weights, or $ARCTIC_EMBED_SOURCE_WEIGHTS)
 set -euo pipefail
 
 REPO="Snowflake/snowflake-arctic-embed-s"
 REVISION="e596f507467533e48a2e17c007f0e1dacc837b33"
-DEST="${1:-${ARCTIC_EMBED_WEIGHTS:-weights}}"
+DEST="${1:-${ARCTIC_EMBED_SOURCE_WEIGHTS:-weights}}"
 
 # file  sha256
 FILES=(

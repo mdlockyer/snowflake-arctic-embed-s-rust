@@ -1,0 +1,9 @@
+snowflake-arctic-embed-s-rust
+
+This product includes model weights derived from Snowflake/snowflake-arctic-embed-s
+(https://huggingface.co/Snowflake/snowflake-arctic-embed-s), Copyright Snowflake Inc.,
+licensed under the Apache License, Version 2.0.
+
+The files in model/ are modified: model.ae8 contains Int8-quantized (SmoothQuant) weights
+converted from the original FP32 checkpoint. vocab.txt is redistributed unmodified.
+See model/README.md for details.
